@@ -13,11 +13,6 @@ var Lib = require('../../lib');
 
 var orientations = ['v', 'h'];
 
-
-function getPosition(di) {
-    return di.pos;
-}
-
 function crossTraceCalc(gd, plotinfo) {
     var calcdata = gd.calcdata;
     var xa = plotinfo.xaxis;
@@ -27,8 +22,6 @@ function crossTraceCalc(gd, plotinfo) {
         var orientation = orientations[i];
         var posAxis = orientation === 'h' ? ya : xa;
         var boxList = [];
-        var minPad = 0;
-        var maxPad = 0;
 
         // make list of boxes / candlesticks
         // For backward compatibility, candlesticks are treated as if they *are* box traces here
@@ -45,27 +38,24 @@ function crossTraceCalc(gd, plotinfo) {
                     trace.yaxis === ya._id
               ) {
                 boxList.push(j);
-
-                if(trace.boxpoints) {
-                    minPad = Math.max(minPad, trace.jitter - trace.pointpos - 1);
-                    maxPad = Math.max(maxPad, trace.jitter + trace.pointpos - 1);
-                }
             }
         }
 
-        setPositionOffset('box', gd, boxList, posAxis, [minPad, maxPad]);
+        setPositionOffset('box', gd, boxList, posAxis);
     }
 }
 
-function setPositionOffset(traceType, gd, boxList, posAxis, pad) {
+function setPositionOffset(traceType, gd, boxList, posAxis) {
     var calcdata = gd.calcdata;
     var fullLayout = gd._fullLayout;
-    var pointList = [];
 
     // N.B. reused in violin
     var numKey = traceType === 'violin' ? '_numViolins' : '_numBoxes';
 
     var i, j, calcTrace;
+    var pointList = [];
+    // !!!
+    var tracesPerGroup
 
     // make list of box points
     for(i = 0; i < boxList.length; i++) {
@@ -78,9 +68,8 @@ function setPositionOffset(traceType, gd, boxList, posAxis, pad) {
     if(!pointList.length) return;
 
     // box plots - update dPos based on multiple traces
-    // and then use for posAxis autorange
     var boxdv = Lib.distinctVals(pointList);
-    var dPos = boxdv.minDiff / 2;
+    var dPos0 = boxdv.minDiff / 2;
 
     // if there's no duplication of x points,
     // disable 'group' mode by setting counter to 1
@@ -91,33 +80,63 @@ function setPositionOffset(traceType, gd, boxList, posAxis, pad) {
     // check for forced minimum dtick
     Axes.minDtick(posAxis, boxdv.minDiff, boxdv.vals[0], true);
 
+    var num = fullLayout[numKey];
+    var group = (fullLayout[traceType + 'mode'] === 'group' && num > 1);
     var gap = fullLayout[traceType + 'gap'];
     var groupgap = fullLayout[traceType + 'groupgap'];
-    var padfactor = (1 - gap) * (1 - groupgap) * dPos / fullLayout[numKey];
+    var padfactor = group ? (1 - gap) * (1 - groupgap) / num : 1;
 
-    // Find maximum trace width
-    // we baseline this at dPos
     for(i = 0; i < boxList.length; i++) {
         calcTrace = calcdata[boxList[i]];
-        // set the width of this box
-        // override dPos with trace.width if present
-        var thisDPos = calcTrace[0].t.dPos = (calcTrace[0].trace.width / 2) || dPos;
-        var positions = calcTrace.map(getPosition);
-        // autoscale the x axis - including space for points if they're off the side
-        // TODO: this will overdo it if the outermost boxes don't have
-        // their points as far out as the other boxes
 
         var trace = calcTrace[0].trace;
-        var vpadminus_pos_side = (trace.pointpos <= 0) ? (-trace.pointpos) * padfactor * fullLayout[numKey] : 0;
-        var vpadplus_neg_side = (trace.pointpos >= 0) ? trace.pointpos * padfactor * fullLayout[numKey] : 0;
-        var side = calcTrace[0].trace.side;
-        var vpadminus = (side === 'positive') ? vpadminus_pos_side + thisDPos * 0.05 : (thisDPos + pad[0] * padfactor);
-        var vpadplus = (side === 'negative') ? vpadplus_neg_side + thisDPos * 0.05 : (thisDPos + pad[1] * padfactor);
-        var extremes = Axes.findExtremes(posAxis, positions, {
+        var t = calcTrace[0].t;
+        var width = trace.width;
+        var side = trace.side;
+        var pointpos = trace.pointpos;
+
+        var dPos = t.dPos = (width / 2) || dPos0;
+        var vpadplus = 0;
+        var vpadminus = 0;
+
+        if(side === 'positive') {
+            vpadplus = dPos;
+        } else if(side === 'negative') {
+            vpadminus = dPos;
+        } else {
+            vpadplus = dPos;
+            vpadminus = dPos;
+        }
+
+        // TODO need to figure our
+
+        console.log(trace.boxpoints, trace.points)
+
+        if(trace.boxpoints || trace.points) {
+            var jitter = trace.jitter;
+            var ref = dPos * (width ? 1 : padfactor);
+
+            if((pointpos + jitter) > 0) {
+                var pp = ref * (pointpos + jitter);
+                console.log('+', pp, vpadplus)
+                if(pp > vpadplus) vpadplus = pp;
+            }
+            if((pointpos - jitter) < 0) {
+                var pm = -ref * (pointpos - jitter);
+                console.log('-', pm, vpadminus)
+                if(pm > vpadminus) vpadminus = pm;
+            }
+        }
+
+        // calcdata[i][j] are in ascending order
+        var firstPos = calcTrace[0].pos;
+        var lastPos = calcTrace[calcTrace.length - 1].pos;
+
+        trace._extremes[posAxis._id] = Axes.findExtremes(posAxis, [firstPos, lastPos], {
             vpadminus: vpadminus,
-            vpadplus: vpadplus
+            vpadplus: vpadplus,
+            // padded: padded
         });
-        calcTrace[0].trace._extremes[posAxis._id] = extremes;
     }
 }
 
